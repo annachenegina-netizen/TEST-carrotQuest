@@ -42,7 +42,7 @@ def health():
     return "OK"
 
 
-@app.route("/webhook/carrotquest", methods=["POST"])
+@app.route("/webhook/carrotquest", methods=["POST"], strict_slashes=False)
 def webhook_from_carrotquest():
     """Carrot Quest шлёт form-urlencoded данные о новом сообщении посетителя."""
     data = request.form
@@ -83,7 +83,7 @@ def webhook_from_carrotquest():
     return "OK", 200
 
 
-@app.route("/webhook/suvvy", methods=["POST"])
+@app.route("/webhook/suvvy", methods=["POST"], strict_slashes=False)
 def webhook_from_suvvy():
     """Suvvy шлёт JSON с готовым ответом ИИ на конкретный chat_id."""
     auth_header = request.headers.get("Authorization", "")
