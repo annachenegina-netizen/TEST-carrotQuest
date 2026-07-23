@@ -12,7 +12,9 @@ load_dotenv()
 
 
 def _required(name: str) -> str:
-    value = os.environ.get(name)
+    # .strip() — защита от лишнего пробела/переноса строки, которые легко
+    # случайно вставить, копируя значение в поле в дашборде Vercel/Suvvy.
+    value = os.environ.get(name, "").strip()
     if not value:
         raise RuntimeError(
             f"Не задана переменная окружения {name}. Добавь её в .env (см. .env.example)."
