@@ -131,7 +131,41 @@ with patch("poller.poll_once", return_value=3) as mocked_poll:
     check("poll/tick: возвращает количество переданных сообщений", response.get_json()["forwarded"] == 3)
 
 # ---------------------------------------------------------------------
-# 7. Ответ ИИ от Suvvy должен уйти обратно в диалог Carrot Quest
+# 7. /status: без верного ключа — 403, с верным — 200 и кнопка теста
+# ---------------------------------------------------------------------
+client = fresh_client(tmp)
+
+response = client.get("/status?key=wrong")
+check("status: неверный ключ → 403", response.status_code == 403, str(response.status_code))
+
+response = client.get("/status?key=test-poll-secret")
+check("status: верный ключ → 200", response.status_code == 200, str(response.status_code))
+check("status: страница содержит кнопку запуска опроса", b"\xd0\x9e\xd0\xbf\xd1\x80\xd0\xbe\xd1\x81\xd0\xb8\xd1\x82\xd1\x8c \xd1\x81\xd0\xb5\xd0\xb9\xd1\x87\xd0\xb0\xd1\x81" in response.data)
+
+# ---------------------------------------------------------------------
+# 7a. /poll/tick через query-параметр key (кнопка на /status) — редиректит обратно
+# ---------------------------------------------------------------------
+with patch("carrotquest_client.requests.get", side_effect=mock_cq_get([], {})):
+    response = client.post("/poll/tick?key=test-poll-secret")
+    check("poll/tick через key: редирект обратно на /status", response.status_code == 302 and "/status" in response.headers.get("Location", ""))
+
+# ---------------------------------------------------------------------
+# 7b. /poll/tick: если Carrot Quest API падает — не 500, ошибка сохраняется в состояние
+# ---------------------------------------------------------------------
+def _broken_get(url, params=None, timeout=None):
+    raise ConnectionError("Carrot Quest недоступен")
+
+
+with patch("carrotquest_client.requests.get", side_effect=_broken_get):
+    response = client.post("/poll/tick", headers={"Authorization": "Bearer test-poll-secret"})
+    check("poll/tick: сбой Carrot Quest API не роняет эндпоинт", response.status_code == 200, str(response.status_code))
+    check("poll/tick: при сбое возвращает forwarded=null", response.get_json()["forwarded"] is None)
+
+response = client.get("/status?key=test-poll-secret")
+check("status: после сбоя показывает ошибку", "ОШИБКА" in response.get_data(as_text=True))
+
+# ---------------------------------------------------------------------
+# 9. Ответ ИИ от Suvvy должен уйти обратно в диалог Carrot Quest
 # ---------------------------------------------------------------------
 client = fresh_client(tmp)
 
@@ -158,7 +192,7 @@ with patch("carrotquest_client.requests.post") as mocked_post:
     check("suvvy webhook: текст ответа передан как есть", sent_data["body"] == "Линия раздачи стоит от 150 000 руб.")
 
 # ---------------------------------------------------------------------
-# 8. Неверный секрет Suvvy — запрос отклоняется
+# 10. Неверный секрет Suvvy — запрос отклоняется
 # ---------------------------------------------------------------------
 client = fresh_client(tmp)
 
@@ -172,7 +206,7 @@ with patch("carrotquest_client.requests.post") as mocked_post:
     check("suvvy webhook: неверный секрет → в Carrot Quest ничего не ушло", not mocked_post.called)
 
 # ---------------------------------------------------------------------
-# 9. test_request от Suvvy (проверка при настройке канала) — просто 200, без пересылки
+# 11. test_request от Suvvy (проверка при настройке канала) — просто 200, без пересылки
 # ---------------------------------------------------------------------
 client = fresh_client(tmp)
 

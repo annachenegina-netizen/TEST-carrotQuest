@@ -17,16 +17,18 @@ conversation_id из Carrot Quest используется как chat_id в Suv
 он и связывает две системы между собой, отдельной базы сопоставлений не нужно.
 """
 
+import html
 import logging
 import threading
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect
 
 import config
 import carrotquest_client
 import suvvy_client
 import poller
 from dedup import SeenStore
+from poll_state import PollState
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -39,6 +41,15 @@ suvvy = suvvy_client.SuvvyClient(cfg.suvvy)
 
 # Защита от повторной пересылки одного и того же сообщения/реплики
 seen = SeenStore("seen_messages.json")
+
+# Для тестовой панели /status — когда был последний опрос и что нашёл
+poll_state = PollState("last_poll.json")
+
+
+def _is_authorized() -> bool:
+    auth_header = request.headers.get("Authorization", "")
+    key_param = request.args.get("key", "")
+    return auth_header == f"Bearer {cfg.poll_secret}" or key_param == cfg.poll_secret
 
 
 @app.route("/", methods=["GET"])
@@ -53,14 +64,62 @@ def poll_tick():
     Для постоянного хостинга (не serverless) это не нужно — там достаточно
     фонового потока (см. run_forever ниже). А вот на serverless-рантайме
     (Vercel и т.п.) фоновых процессов между запросами нет, поэтому опрос
-    дёргается снаружи по расписанию (внешний cron, см. bridge/README.md).
+    дёргается снаружи: либо кнопкой на /status (тест), либо по расписанию
+    внешним cron с заголовком Authorization (см. bridge/README.md).
     """
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header != f"Bearer {cfg.poll_secret}":
+    if not _is_authorized():
         return jsonify({"error": "invalid secret"}), 403
 
-    forwarded = poller.poll_once(cq_client, suvvy, seen)
+    try:
+        forwarded = poller.poll_once(cq_client, suvvy, seen)
+        poll_state.record(forwarded=forwarded, error=None)
+    except Exception as exc:
+        logger.exception("Ошибка при опросе Carrot Quest")
+        poll_state.record(forwarded=None, error=str(exc))
+        forwarded = None
+
+    key_param = request.args.get("key", "")
+    if key_param:
+        # Запущено кнопкой с тестовой панели — вернуться туда же
+        return redirect(f"/status?key={key_param}")
     return jsonify({"forwarded": forwarded}), 200
+
+
+@app.route("/status", methods=["GET"])
+def status_page():
+    """Тестовая панель: жив ли сервер, когда был последний опрос, кнопка
+    запустить опрос вручную — чтобы не звать curl/cron-job.org для теста.
+    """
+    key_param = request.args.get("key", "")
+    if key_param != cfg.poll_secret:
+        return "Доступ запрещён", 403
+
+    last = poll_state.read()
+    if last is None:
+        last_line = "Опросов ещё не было"
+    elif last.get("error"):
+        last_line = f"Последний опрос: {last['at']} — ОШИБКА: {html.escape(last['error'])}"
+    else:
+        last_line = f"Последний опрос: {last['at']} — переслано в Suvvy сообщений: {last['forwarded']}"
+
+    safe_key = html.escape(key_param, quote=True)
+    return f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>ЧТТ bridge — тестовая панель</title>
+</head>
+<body style="font-family: sans-serif; max-width: 640px; margin: 40px auto; line-height: 1.6; padding: 0 16px;">
+  <h1>Мост Suvvy ⇆ Carrot Quest</h1>
+  <p>Сервер жив.</p>
+  <p>{last_line}</p>
+  <form method="post" action="/poll/tick?key={safe_key}">
+    <button type="submit" style="font-size: 16px; padding: 8px 16px; cursor: pointer;">
+      Опросить сейчас
+    </button>
+  </form>
+</body>
+</html>"""
 
 
 @app.route("/webhook/suvvy", methods=["POST"], strict_slashes=False)
