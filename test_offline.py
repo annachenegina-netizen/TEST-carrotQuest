@@ -1,9 +1,9 @@
 """
 Офлайн-проверка моста БЕЗ реальных аккаунтов Carrot Quest/Suvvy.
 
-Подменяет исходящие HTTP-запросы (requests.post) фейковыми ответами и
-прогоняет реальный код обработчиков вебхуков — чтобы поймать логические
-ошибки ДО того, как появятся настоящие доступы.
+Подменяет исходящие HTTP-запросы (requests.get/post) фейковыми ответами и
+прогоняет реальный код обработчиков — чтобы поймать логические ошибки ДО
+того, как появятся настоящие доступы.
 
 Запуск: python test_offline.py
 """
@@ -17,12 +17,13 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8")
 
 # Тестовые переменные окружения — чтобы config.py не падал на "нет .env"
-os.environ["CARROTQUEST_WEBHOOK_TOKEN"] = "test-cq-token"
-os.environ["CARROTQUEST_AUTH_TOKEN"] = "test-cq-auth"
+os.environ["CARROTQUEST_AUTH_TOKEN"] = "app.71969.test-cq-auth"
 os.environ["SUVVY_API_TOKEN"] = "test-suvvy-token"
 os.environ["SUVVY_WEBHOOK_SECRET"] = "test-suvvy-secret"
+os.environ["POLL_SECRET"] = "test-poll-secret"
 
 import app as bridge_app  # noqa: E402
+import poller  # noqa: E402
 
 failures = []
 
@@ -41,64 +42,96 @@ def fresh_client(tmp_dir: str):
     return bridge_app.app.test_client()
 
 
-import tempfile
+def mock_cq_get(conversations_response, parts_by_conversation):
+    """Подменяет carrotquest_client.requests.get под оба метода (список
+    диалогов и реплики диалога) по URL запроса."""
 
-tmp = tempfile.mkdtemp()
+    def _fake_get(url, params=None, timeout=None):
+        if url.endswith("/conversations") and "apps" in url:
+            return Mock(
+                raise_for_status=Mock(),
+                json=Mock(return_value={"data": conversations_response}),
+            )
+        if "/parts" in url:
+            conversation_id = url.split("/conversations/")[1].split("/parts")[0]
+            return Mock(
+                raise_for_status=Mock(),
+                json=Mock(return_value={"data": parts_by_conversation.get(conversation_id, [])}),
+            )
+        raise AssertionError(f"неожиданный GET-запрос: {url}")
+
+    return _fake_get
+
 
 # ---------------------------------------------------------------------
-# 1. Сообщение от посетителя в Carrot Quest должно уйти в Suvvy
+# 1. app_id корректно извлекается из auth_token формата "app.<id>.<секрет>"
+# ---------------------------------------------------------------------
+check("carrotquest_client: app_id извлечён из auth_token", bridge_app.cq_client.app_id == "71969", bridge_app.cq_client.app_id)
+
+# ---------------------------------------------------------------------
+# 2. Поллинг: диалог с непрочитанной репликой посетителя → сообщение уходит в Suvvy
+# ---------------------------------------------------------------------
+tmp = __import__("tempfile").mkdtemp()
+client = fresh_client(tmp)
+
+conversations = [{"id": "conv-1", "admin_unread_count": 1}]
+parts = {"conv-1": [{"id": "part-1", "type": "reply_user", "body": "Сколько стоит линия раздачи?"}]}
+
+with patch("carrotquest_client.requests.get", side_effect=mock_cq_get(conversations, parts)):
+    with patch("suvvy_client.requests.post") as mocked_post:
+        mocked_post.return_value = Mock(raise_for_status=Mock())
+
+        forwarded = poller.poll_once(bridge_app.cq_client, bridge_app.suvvy, bridge_app.seen)
+
+        check("poller: одно сообщение передано в Suvvy", forwarded == 1, str(forwarded))
+        check("poller: запрос в Suvvy ушёл", mocked_post.called)
+
+        sent_json = mocked_post.call_args.kwargs["json"]
+        check("poller: chat_id = conversation_id", sent_json["chat_id"] == "conv-1", sent_json["chat_id"])
+        check("poller: текст реплики передан как есть", sent_json["text"] == "Сколько стоит линия раздачи?")
+        check("poller: sender = customer", sent_json["message_sender"] == "customer")
+
+# ---------------------------------------------------------------------
+# 3. Повторный опрос той же самой реплики не должен дублировать пересылку
+# ---------------------------------------------------------------------
+with patch("carrotquest_client.requests.get", side_effect=mock_cq_get(conversations, parts)):
+    with patch("suvvy_client.requests.post") as mocked_post:
+        mocked_post.return_value = Mock(raise_for_status=Mock())
+        poller.poll_once(bridge_app.cq_client, bridge_app.suvvy, bridge_app.seen)
+        check("poller: повторный опрос не дублирует пересылку", not mocked_post.called)
+
+# ---------------------------------------------------------------------
+# 4. Диалоги без непрочитанных реплик посетителя — игнорируются
+# ---------------------------------------------------------------------
+client = fresh_client(tmp)
+conversations_read = [{"id": "conv-2", "admin_unread_count": 0}]
+
+with patch("carrotquest_client.requests.get", side_effect=mock_cq_get(conversations_read, {})):
+    with patch("suvvy_client.requests.post") as mocked_post:
+        forwarded = poller.poll_once(bridge_app.cq_client, bridge_app.suvvy, bridge_app.seen)
+        check("poller: диалог без непрочитанных реплик пропущен", forwarded == 0 and not mocked_post.called)
+
+# ---------------------------------------------------------------------
+# 5. /poll/tick: без верного секрета — 403, ничего не опрашивается
 # ---------------------------------------------------------------------
 client = fresh_client(tmp)
 
-with patch("suvvy_client.requests.post") as mocked_post:
-    mocked_post.return_value = Mock(raise_for_status=Mock())
-
-    response = client.post(
-        "/webhook/carrotquest",
-        data={
-            "token": "test-cq-token",
-            "conversation_id": "conv-1",
-            "conversation_body": "Сколько стоит линия раздачи?",
-        },
-    )
-
-    check("carrotquest webhook: отвечает 200", response.status_code == 200, str(response.status_code))
-    check("carrotquest webhook: запрос в Suvvy ушёл", mocked_post.called)
-
-    sent_json = mocked_post.call_args.kwargs["json"]
-    check("carrotquest webhook: chat_id = conversation_id", sent_json["chat_id"] == "conv-1", sent_json["chat_id"])
-    check("carrotquest webhook: текст сообщения передан как есть", sent_json["text"] == "Сколько стоит линия раздачи?")
-    check("carrotquest webhook: sender = customer", sent_json["message_sender"] == "customer")
+with patch("poller.poll_once") as mocked_poll:
+    response = client.post("/poll/tick", headers={"Authorization": "Bearer wrong"})
+    check("poll/tick: неверный секрет → 403", response.status_code == 403, str(response.status_code))
+    check("poll/tick: неверный секрет → опрос не запущен", not mocked_poll.called)
 
 # ---------------------------------------------------------------------
-# 2. Неверный token — запрос должен отклоняться, в Suvvy ничего не улетает
+# 6. /poll/tick: с верным секретом — 200, опрос запущен
 # ---------------------------------------------------------------------
-client = fresh_client(tmp)
-
-with patch("suvvy_client.requests.post") as mocked_post:
-    response = client.post(
-        "/webhook/carrotquest",
-        data={"token": "wrong", "conversation_id": "conv-1", "conversation_body": "hi"},
-    )
-    check("carrotquest webhook: неверный token → 403", response.status_code == 403, str(response.status_code))
-    check("carrotquest webhook: неверный token → в Suvvy ничего не ушло", not mocked_post.called)
+with patch("poller.poll_once", return_value=3) as mocked_poll:
+    response = client.post("/poll/tick", headers={"Authorization": "Bearer test-poll-secret"})
+    check("poll/tick: верный секрет → 200", response.status_code == 200, str(response.status_code))
+    check("poll/tick: верный секрет → опрос запущен", mocked_poll.called)
+    check("poll/tick: возвращает количество переданных сообщений", response.get_json()["forwarded"] == 3)
 
 # ---------------------------------------------------------------------
-# 3. Повторный такой же вебхук (ретрай) не должен дублировать пересылку
-# ---------------------------------------------------------------------
-client = fresh_client(tmp)
-
-with patch("suvvy_client.requests.post") as mocked_post:
-    mocked_post.return_value = Mock(raise_for_status=Mock())
-    payload = {"token": "test-cq-token", "conversation_id": "conv-2", "conversation_body": "Привет"}
-
-    client.post("/webhook/carrotquest", data=payload)
-    client.post("/webhook/carrotquest", data=payload)  # тот же самый запрос повторно
-
-    check("carrotquest webhook: ретрай не дублирует пересылку в Suvvy", mocked_post.call_count == 1, f"вызовов: {mocked_post.call_count}")
-
-# ---------------------------------------------------------------------
-# 4. Ответ ИИ от Suvvy должен уйти обратно в диалог Carrot Quest
+# 7. Ответ ИИ от Suvvy должен уйти обратно в диалог Carrot Quest
 # ---------------------------------------------------------------------
 client = fresh_client(tmp)
 
@@ -121,11 +154,11 @@ with patch("carrotquest_client.requests.post") as mocked_post:
     check("suvvy webhook: ответ ушёл в Carrot Quest", mocked_post.called)
 
     sent_data = mocked_post.call_args.kwargs["data"]
-    check("suvvy webhook: auth_token подставлен верно", sent_data["auth_token"] == "test-cq-auth")
+    check("suvvy webhook: auth_token подставлен верно", sent_data["auth_token"] == "app.71969.test-cq-auth")
     check("suvvy webhook: текст ответа передан как есть", sent_data["body"] == "Линия раздачи стоит от 150 000 руб.")
 
 # ---------------------------------------------------------------------
-# 5. Неверный секрет Suvvy — запрос отклоняется
+# 8. Неверный секрет Suvvy — запрос отклоняется
 # ---------------------------------------------------------------------
 client = fresh_client(tmp)
 
@@ -139,7 +172,7 @@ with patch("carrotquest_client.requests.post") as mocked_post:
     check("suvvy webhook: неверный секрет → в Carrot Quest ничего не ушло", not mocked_post.called)
 
 # ---------------------------------------------------------------------
-# 6. test_request от Suvvy (проверка при настройке канала) — просто 200, без пересылки
+# 9. test_request от Suvvy (проверка при настройке канала) — просто 200, без пересылки
 # ---------------------------------------------------------------------
 client = fresh_client(tmp)
 

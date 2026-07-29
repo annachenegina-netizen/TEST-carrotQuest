@@ -1,12 +1,16 @@
 """
-Bridge-сервер между Carrot Quest и Suvvy.ai (схема — в ../docs/integration.md).
+Мост между Carrot Quest и Suvvy.ai (схема — в ../docs/integration.md).
 
 Как это работает:
 1. Посетитель пишет в виджет Carrot Quest на сайте.
-2. Carrot Quest шлёт вебхук сюда, в /webhook/carrotquest.
-3. Мы пересылаем текст в Suvvy через её API.
+2. Мы САМИ периодически опрашиваем Carrot Quest на новые сообщения
+   (см. poller.py) — вебхука на "новое сообщение от посетителя" в Carrot
+   Quest нет (проверено вручную по всем разделам админки и по докам,
+   есть только статистика по исходящим триггерным рассылкам).
+3. Найденный текст пересылаем в Suvvy через её API.
 4. Suvvy обрабатывает вопрос ИИ и присылает готовый ответ сюда,
-   в /webhook/suvvy (это отдельный, асинхронный запрос).
+   в /webhook/suvvy (это отдельный, асинхронный запрос — тут вебхук
+   у Suvvy есть и он реально работает, проверено).
 5. Мы кладём этот ответ обратно в диалог через API Carrot Quest.
 
 conversation_id из Carrot Quest используется как chat_id в Suvvy —
@@ -14,14 +18,14 @@ conversation_id из Carrot Quest используется как chat_id в Suv
 """
 
 import logging
-import time
-import uuid
+import threading
 
 from flask import Flask, request, jsonify
 
 import config
 import carrotquest_client
 import suvvy_client
+import poller
 from dedup import SeenStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -33,7 +37,7 @@ cfg = config.load_config()
 cq_client = carrotquest_client.CarrotQuestClient(cfg.carrotquest)
 suvvy = suvvy_client.SuvvyClient(cfg.suvvy)
 
-# Защита от повторной пересылки одного и того же сообщения при ретраях
+# Защита от повторной пересылки одного и того же сообщения/реплики
 seen = SeenStore("seen_messages.json")
 
 
@@ -42,45 +46,21 @@ def health():
     return "OK"
 
 
-@app.route("/webhook/carrotquest", methods=["POST"], strict_slashes=False)
-def webhook_from_carrotquest():
-    """Carrot Quest шлёт form-urlencoded данные о новом сообщении посетителя."""
-    data = request.form
+@app.route("/poll/tick", methods=["GET", "POST"], strict_slashes=False)
+def poll_tick():
+    """Один проход опроса Carrot Quest на новые сообщения от посетителей.
 
-    if data.get("token") != cfg.carrotquest.webhook_token:
-        logger.warning("Carrot Quest webhook: неверный token, запрос отклонён")
-        return jsonify({"error": "invalid token"}), 403
+    Для постоянного хостинга (не serverless) это не нужно — там достаточно
+    фонового потока (см. run_forever ниже). А вот на serverless-рантайме
+    (Vercel и т.п.) фоновых процессов между запросами нет, поэтому опрос
+    дёргается снаружи по расписанию (внешний cron, см. bridge/README.md).
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header != f"Bearer {cfg.poll_secret}":
+        return jsonify({"error": "invalid secret"}), 403
 
-    conversation_id = data.get("conversation_id")
-    message_text = data.get("conversation_body")
-
-    # Другие типы событийных вебхуков (не сообщение от посетителя) —
-    # просто подтверждаем получение и ничего не пересылаем.
-    if not conversation_id or not message_text:
-        return "OK", 200
-
-    # Ключ дедупликации грубый (по времени с округлением до 5 сек), но для
-    # защиты от ретраев этого достаточно — точного message_id Carrot Quest не даёт.
-    dedup_key = f"cq:{conversation_id}:{hash(message_text)}:{int(time.time() // 5)}"
-    if seen.already_seen(dedup_key):
-        return "OK", 200
-    seen.mark_seen(dedup_key)
-
-    try:
-        suvvy.send_message(
-            chat_id=conversation_id,
-            text=message_text,
-            message_id=str(uuid.uuid4()),
-            sender="customer",
-        )
-    except Exception:
-        logger.exception(
-            "Не удалось передать сообщение в Suvvy (conversation_id=%s)", conversation_id
-        )
-        # Отвечаем 200 всё равно: проблема не в самом вебхуке, а в недоступности
-        # Suvvy, и ретрай того же вебхука от Carrot Quest её не решит.
-
-    return "OK", 200
+    forwarded = poller.poll_once(cq_client, suvvy, seen)
+    return jsonify({"forwarded": forwarded}), 200
 
 
 @app.route("/webhook/suvvy", methods=["POST"], strict_slashes=False)
@@ -117,4 +97,13 @@ def webhook_from_suvvy():
 
 
 if __name__ == "__main__":
+    # Локально/на постоянном хостинге (не serverless) опрос удобнее не
+    # ждать снаружи через cron, а крутить фоновым потоком прямо тут.
+    poll_thread = threading.Thread(
+        target=poller.run_forever,
+        args=(cq_client, suvvy, seen, cfg.poll_interval_seconds),
+        daemon=True,
+    )
+    poll_thread.start()
+
     app.run(host="0.0.0.0", port=cfg.port)

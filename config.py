@@ -24,10 +24,9 @@ def _required(name: str) -> str:
 
 @dataclass(frozen=True)
 class CarrotQuestConfig:
-    # Токен, которым Carrot Quest подписывает вебхуки — сверяем на входе,
-    # чтобы никто чужой не мог слать нам поддельные сообщения посетителей.
-    webhook_token: str
-    # Токен приложения для ответа в диалог (админка Carrot Quest → "Разработчикам").
+    # Токен приложения (админка Carrot Quest → "Разработчикам", формат
+    # "app.<id>.<секрет>") — им же подписываем запросы к Web API при
+    # поллинге диалогов и отвечаем в диалог.
     auth_token: str
 
 
@@ -44,12 +43,16 @@ class Config:
     carrotquest: CarrotQuestConfig
     suvvy: SuvvyConfig
     port: int
+    # Секрет для защиты /poll/tick — этот эндпоинт дёргает внешний cron
+    # (Vercel Cron/cron-job.org), без проверки кто угодно мог бы им спамить
+    # наши запросы в Suvvy.
+    poll_secret: str
+    poll_interval_seconds: int
 
 
 def load_config() -> Config:
     return Config(
         carrotquest=CarrotQuestConfig(
-            webhook_token=_required("CARROTQUEST_WEBHOOK_TOKEN"),
             auth_token=_required("CARROTQUEST_AUTH_TOKEN"),
         ),
         suvvy=SuvvyConfig(
@@ -57,4 +60,6 @@ def load_config() -> Config:
             webhook_secret=_required("SUVVY_WEBHOOK_SECRET"),
         ),
         port=int(os.environ.get("PORT", "8000")),
+        poll_secret=_required("POLL_SECRET"),
+        poll_interval_seconds=int(os.environ.get("POLL_INTERVAL_SECONDS", "5")),
     )
