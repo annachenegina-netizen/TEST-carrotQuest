@@ -122,6 +122,41 @@ def status_page():
 </html>"""
 
 
+@app.route("/widget-test", methods=["GET"])
+def widget_test_page():
+    """Тестовая страница с виджетом Carrot Quest — пока скрипт не поставлен
+    на настоящий сайт refettorio.ru (программистом ЧТТ), можно проверить
+    весь путь (виджет → мост → Suvvy → ответ) здесь.
+
+    Код виджета — ровно тот, что Carrot Quest выдаёт в разделе "Установите
+    Carrot quest на сайт" → "Установить скрипт вручную" (app_id/api_key
+    зашиты в сам сниппет, это не секрет — он и так публично лежит в
+    исходном коде любого сайта, где стоит виджет).
+    """
+    return """<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>ЧТТ — тест виджета Carrot Quest</title>
+</head>
+<body style="font-family: sans-serif; max-width: 640px; margin: 40px auto; line-height: 1.6; padding: 0 16px;">
+  <h1>Тестовая страница виджета Carrot Quest</h1>
+  <p>
+    Пока скрипт не поставлен на refettorio.ru — виджет тут, для проверки
+    связки виджет → мост → Suvvy → ответ. Открой чат в правом нижнем углу
+    и напиши что-нибудь, потом жми "Опросить сейчас" на
+    <a href="/status">тестовой панели</a>.
+  </p>
+
+  <!-- Carrot quest BEGIN -->
+  <script type="text/javascript">
+  !function(){function t(t,e){return function(){window.carrotquestasync.push(t,arguments)}}if("undefined"==typeof carrotquest){var e=document.createElement("script");e.type="text/javascript",e.async=!0,e.src="https://cdn.carrotquest.app/api.min.js",document.getElementsByTagName("head")[0].appendChild(e),window.carrotquest={},window.carrotquestasync=[],carrotquest.settings={};for(var n=["connect","track","identify","auth","onReady","addCallback","removeCallback","trackMessageInteraction"],a=0;a<n.length;a++)carrotquest[n[a]]=t(n[a])}}(),carrotquest.connect("71969-a44fc546422f1787a98efad4bd");
+  </script>
+  <!-- Carrot quest END -->
+</body>
+</html>"""
+
+
 @app.route("/webhook/suvvy", methods=["POST"], strict_slashes=False)
 def webhook_from_suvvy():
     """Suvvy шлёт JSON с готовым ответом ИИ на конкретный chat_id."""
