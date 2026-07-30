@@ -158,6 +158,35 @@ with patch("carrotquest_client.requests.get", side_effect=mock_cq_get(conversati
         )
 
 # ---------------------------------------------------------------------
+# 3c. Несколько реплик с телефоном за один проход (например, после сброса
+# дедупликации на холодном старте) — побеждает телефон из САМОЙ ПОЗДНЕЙ
+# реплики. API отдаёт реплики от новых к старым (как в реальном Carrot
+# Quest) — специально кладём в mock именно в этом порядке.
+# ---------------------------------------------------------------------
+client = fresh_client(tmp)
+conversations_multi = [{"id": "conv-4", "admin_unread_count": 1, "user": {"id": 777}}]
+parts_multi = {
+    "conv-4": [
+        {"id": "part-new", "type": "reply_user", "body": "Актуальный телефон 79111112222", "created": 200},
+        {"id": "part-old", "type": "reply_user", "body": "Старый телефон 79999998888", "created": 100},
+    ]
+}
+
+with patch("carrotquest_client.requests.get", side_effect=mock_cq_get(conversations_multi, parts_multi)):
+    with patch("carrotquest_client.requests.post") as mocked_post:
+        mocked_post.return_value = Mock(raise_for_status=Mock())
+        poller.poll_once(bridge_app.cq_client, bridge_app.suvvy, bridge_app.seen)
+
+    props_calls = [c for c in mocked_post.call_args_list if c.args[0].endswith("/users/777/props")]
+    check("poller: обе реплики с телефоном обработаны", len(props_calls) == 2, str(len(props_calls)))
+    if len(props_calls) == 2:
+        check(
+            "poller: последней ушла реплика с АКТУАЛЬНЫМ телефоном (не самая старая)",
+            props_calls[-1].kwargs["json"]["operations"][0]["value"] == "79111112222",
+            str(props_calls[-1].kwargs["json"]),
+        )
+
+# ---------------------------------------------------------------------
 # 4. Диалоги без непрочитанных реплик посетителя — игнорируются
 # ---------------------------------------------------------------------
 client = fresh_client(tmp)
