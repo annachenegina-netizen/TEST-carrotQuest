@@ -1,0 +1,19 @@
+name: Опрос Carrot Quest на новые сообщения
+
+# Carrot Quest не умеет присылать вебхук на "новое сообщение от посетителя"
+# (см. bridge/README.md) — поэтому опрашиваем сами по расписанию.
+# 5 минут — минимальный интервал, который поддерживает GitHub Actions
+# для cron-триггеров.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Вызвать /poll/tick
+        run: |
+          curl -sf -X POST "https://test-carrot-quest-jvut.vercel.app/poll/tick" \
+            -H "Authorization: Bearer ${{ secrets.POLL_SECRET }}"
