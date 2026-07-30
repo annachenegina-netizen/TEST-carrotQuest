@@ -66,10 +66,13 @@ def poll_once(cq_client, suvvy, seen) -> int:
             # интеграция Интеграции → CRM → Битрикс24 (без своего кода для
             # самого Битрикса, см. bridge/README.md).
             phone = extract_phone(text)
+            print(f"DEBUG phone_extract text={text!r} phone={phone!r} user_id={user_id!r}", flush=True)
             if phone and user_id:
                 try:
                     cq_client.set_user_phone(user_id, phone)
-                except Exception:
+                    print(f"DEBUG set_user_phone OK user_id={user_id} phone={phone}", flush=True)
+                except Exception as exc:
+                    print(f"DEBUG set_user_phone FAILED user_id={user_id} phone={phone} exc={exc!r}", flush=True)
                     logger.exception(
                         "Не удалось записать телефон пользователя (user_id=%s)", user_id
                     )
