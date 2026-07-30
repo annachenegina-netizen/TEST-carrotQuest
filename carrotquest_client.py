@@ -89,6 +89,12 @@ class CarrotQuestClient:
         которое настраивается готовая интеграция Интеграции → CRM →
         Битрикс24 — так заявка с номером телефона долетает до Битрикса без
         своего кода для самого Битрикса (см. bridge/README.md).
+
+        by_user_id ОБЯЗАТЕЛЬНО false: true означает "user_id — это внешний
+        ID из твоей системы (через identify())", а не внутренний числовой id
+        Carrot Quest, который мы тут передаём. С true API создавал новый
+        фантомный профиль пользователя вместо обновления настоящего —
+        проверено вживую 2026-07-30.
         """
         url = _USER_PROPS_URL.format(user_id=user_id)
         response = requests.post(
@@ -96,7 +102,7 @@ class CarrotQuestClient:
             params={"auth_token": self.auth_token},
             json={
                 "operations": [{"op": "update_or_create", "key": "$phone", "value": phone}],
-                "by_user_id": True,
+                "by_user_id": False,
                 "app": "$self_app",
             },
             timeout=15,

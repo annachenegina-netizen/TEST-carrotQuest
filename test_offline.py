@@ -151,6 +151,11 @@ with patch("carrotquest_client.requests.get", side_effect=mock_cq_get(conversati
             sent_json["operations"][0]["value"] == "79123456789",
             str(sent_json),
         )
+        check(
+            "poller: by_user_id=false (иначе Carrot Quest создаёт фантомного пользователя)",
+            sent_json["by_user_id"] is False,
+            str(sent_json),
+        )
 
 # ---------------------------------------------------------------------
 # 4. Диалоги без непрочитанных реплик посетителя — игнорируются
