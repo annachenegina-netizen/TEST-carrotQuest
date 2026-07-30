@@ -69,6 +69,21 @@ def mock_cq_get(conversations_response, parts_by_conversation):
 check("carrotquest_client: app_id извлечён из auth_token", bridge_app.cq_client.app_id == "71969", bridge_app.cq_client.app_id)
 
 # ---------------------------------------------------------------------
+# 1a. include_not_assigned=true обязателен — без него Carrot Quest молча
+# не отдаёт диалоги без назначенного оператора (у нас все диалоги такие).
+# Проверено вживую 2026-07-30: без этого параметра список всегда пуст.
+# ---------------------------------------------------------------------
+with patch("carrotquest_client.requests.get") as mocked_get:
+    mocked_get.return_value = Mock(raise_for_status=Mock(), json=Mock(return_value={"data": []}))
+    bridge_app.cq_client.list_conversations_with_unread()
+    sent_params = mocked_get.call_args.kwargs["params"]
+    check(
+        "carrotquest_client: include_not_assigned=true передан в запросе",
+        sent_params.get("include_not_assigned") == "true",
+        str(sent_params),
+    )
+
+# ---------------------------------------------------------------------
 # 2. Поллинг: диалог с непрочитанной репликой посетителя → сообщение уходит в Suvvy
 # ---------------------------------------------------------------------
 tmp = __import__("tempfile").mkdtemp()

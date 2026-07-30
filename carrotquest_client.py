@@ -47,11 +47,22 @@ class CarrotQuestClient:
         response.raise_for_status()
 
     def list_conversations_with_unread(self) -> list[dict]:
-        """Диалоги приложения, где есть реплики посетителя, не прочитанные оператором."""
+        """Диалоги приложения, где есть реплики посетителя, не прочитанные оператором.
+
+        include_not_assigned=true обязателен: без него API по умолчанию не
+        отдаёт диалоги без назначенного оператора — а у нас ВСЕ диалоги
+        именно такие (ни один оператор ими не занимается, отвечает только
+        Suvvy). Проверено вживую: без этого параметра список всегда пуст,
+        даже если диалог с сообщением реально существует.
+        """
         url = _APP_CONVERSATIONS_URL.format(app_id=self.app_id)
         response = requests.get(
             url,
-            params={"auth_token": self.auth_token, "closed": "false"},
+            params={
+                "auth_token": self.auth_token,
+                "closed": "false",
+                "include_not_assigned": "true",
+            },
             timeout=15,
         )
         response.raise_for_status()
