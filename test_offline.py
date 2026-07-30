@@ -116,6 +116,43 @@ with patch("carrotquest_client.requests.get", side_effect=mock_cq_get(conversati
         check("poller: повторный опрос не дублирует пересылку", not mocked_post.called)
 
 # ---------------------------------------------------------------------
+# 3a. extract_phone: достаёт номер телефона из текста в разных форматах
+# ---------------------------------------------------------------------
+check("extract_phone: +7 с пробелами", poller.extract_phone("+7 912 345 67 89") == "+79123456789")
+check("extract_phone: 8 слитно", poller.extract_phone("мой номер 89123456789, жду звонка") == "+79123456789")
+check("extract_phone: с дефисами и скобками", poller.extract_phone("8(912)345-67-89") == "+79123456789")
+check("extract_phone: без номера в тексте", poller.extract_phone("сколько стоит линия раздачи?") is None)
+
+# ---------------------------------------------------------------------
+# 3b. Поллинг: телефон в сообщении посетителя записывается в свойство $phone
+#
+# ВАЖНО: carrotquest_client.py и suvvy_client.py оба делают "import requests" —
+# это один и тот же объект модуля в sys.modules. Патчить
+# "carrotquest_client.requests.post" и "suvvy_client.requests.post" ОДНОВРЕМЕННО
+# двумя вложенными patch() нельзя — они бьют по одному и тому же атрибуту
+# requests.post, и внутренний patch молча перекрывает внешний на время своего
+# действия. Поэтому патчим requests.post один раз и различаем вызовы по URL.
+# ---------------------------------------------------------------------
+client = fresh_client(tmp)
+conversations_phone = [{"id": "conv-3", "admin_unread_count": 1, "user": {"id": 555}}]
+parts_phone = {"conv-3": [{"id": "part-phone-1", "type": "reply_user", "body": "Мой телефон +7 912 345 67 89"}]}
+
+with patch("carrotquest_client.requests.get", side_effect=mock_cq_get(conversations_phone, parts_phone)):
+    with patch("carrotquest_client.requests.post") as mocked_post:
+        mocked_post.return_value = Mock(raise_for_status=Mock())
+        poller.poll_once(bridge_app.cq_client, bridge_app.suvvy, bridge_app.seen)
+
+    props_calls = [c for c in mocked_post.call_args_list if c.args[0].endswith("/users/555/props")]
+    check("poller: телефон посетителя ушёл в set_user_phone", len(props_calls) == 1, str(mocked_post.call_args_list))
+    if props_calls:
+        sent_json = props_calls[0].kwargs["json"]
+        check(
+            "poller: телефон нормализован в операции обновления свойства",
+            sent_json["operations"][0]["value"] == "+79123456789",
+            str(sent_json),
+        )
+
+# ---------------------------------------------------------------------
 # 4. Диалоги без непрочитанных реплик посетителя — игнорируются
 # ---------------------------------------------------------------------
 client = fresh_client(tmp)

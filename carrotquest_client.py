@@ -18,6 +18,7 @@ _API_BASE = "https://api.carrotquest.io/v1"
 _REPLY_URL = _API_BASE + "/conversations/{conversation_id}/reply"
 _APP_CONVERSATIONS_URL = _API_BASE + "/apps/{app_id}/conversations"
 _CONVERSATION_PARTS_URL = _API_BASE + "/conversations/{conversation_id}/parts"
+_USER_PROPS_URL = _API_BASE + "/users/{user_id}/props"
 
 # Реплика посетителя в диалоге — единственный интересующий нас тип части
 # диалога (bcost: reply_admin/auto_reply/note/tag_added и т.п. — не наши).
@@ -80,3 +81,24 @@ class CarrotQuestClient:
         response.raise_for_status()
         parts = response.json().get("data", [])
         return [p for p in parts if p.get("type") == _VISITOR_PART_TYPE]
+
+    def set_user_phone(self, user_id: int, phone: str) -> None:
+        """Записывает телефон в свойство $phone пользователя.
+
+        Это триггерит системное событие Carrot Quest "$phone_changed", на
+        которое настраивается готовая интеграция Интеграции → CRM →
+        Битрикс24 — так заявка с номером телефона долетает до Битрикса без
+        своего кода для самого Битрикса (см. bridge/README.md).
+        """
+        url = _USER_PROPS_URL.format(user_id=user_id)
+        response = requests.post(
+            url,
+            params={"auth_token": self.auth_token},
+            json={
+                "operations": [{"op": "update_or_create", "key": "$phone", "value": phone}],
+                "by_user_id": True,
+                "app": "$self_app",
+            },
+            timeout=15,
+        )
+        response.raise_for_status()

@@ -4,10 +4,29 @@
 """
 
 import logging
+import re
 import time
 import uuid
 
 logger = logging.getLogger(__name__)
+
+# Российский номер в любом привычном написании: +7..., 8..., с пробелами/
+# скобками/дефисами или без. Этого достаточно для того, что клиент печатает
+# руками в чат — не парсер произвольных международных номеров.
+_PHONE_RE = re.compile(r"(?:\+7|8|7)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
+
+
+def extract_phone(text: str) -> str | None:
+    """Достаёт из текста сообщения российский номер телефона, если он там есть."""
+    match = _PHONE_RE.search(text)
+    if not match:
+        return None
+    digits = re.sub(r"\D", "", match.group())
+    if len(digits) == 11 and digits[0] in "78":
+        return "+7" + digits[1:]
+    if len(digits) == 10:
+        return "+7" + digits
+    return None
 
 
 def poll_once(cq_client, suvvy, seen) -> int:
@@ -15,6 +34,7 @@ def poll_once(cq_client, suvvy, seen) -> int:
     forwarded = 0
     for conversation in cq_client.list_conversations_with_unread():
         conversation_id = conversation["id"]
+        user_id = conversation.get("user", {}).get("id")
 
         try:
             parts = cq_client.get_visitor_parts(conversation_id)
@@ -34,6 +54,20 @@ def poll_once(cq_client, suvvy, seen) -> int:
             if seen.already_seen(dedup_key):
                 continue
             seen.mark_seen(dedup_key)
+
+            # Если посетитель оставил телефон — записываем его в свойство
+            # $phone пользователя. Это триггерит системное событие Carrot
+            # Quest "$phone_changed", на которое настраивается готовая
+            # интеграция Интеграции → CRM → Битрикс24 (без своего кода для
+            # самого Битрикса, см. bridge/README.md).
+            phone = extract_phone(text)
+            if phone and user_id:
+                try:
+                    cq_client.set_user_phone(user_id, phone)
+                except Exception:
+                    logger.exception(
+                        "Не удалось записать телефон пользователя (user_id=%s)", user_id
+                    )
 
             try:
                 suvvy.send_message(
