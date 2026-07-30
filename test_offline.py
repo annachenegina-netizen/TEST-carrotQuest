@@ -118,9 +118,9 @@ with patch("carrotquest_client.requests.get", side_effect=mock_cq_get(conversati
 # ---------------------------------------------------------------------
 # 3a. extract_phone: достаёт номер телефона из текста в разных форматах
 # ---------------------------------------------------------------------
-check("extract_phone: +7 с пробелами", poller.extract_phone("+7 912 345 67 89") == "+79123456789")
-check("extract_phone: 8 слитно", poller.extract_phone("мой номер 89123456789, жду звонка") == "+79123456789")
-check("extract_phone: с дефисами и скобками", poller.extract_phone("8(912)345-67-89") == "+79123456789")
+check("extract_phone: +7 с пробелами", poller.extract_phone("+7 912 345 67 89") == "79123456789")
+check("extract_phone: 8 слитно", poller.extract_phone("мой номер 89123456789, жду звонка") == "79123456789")
+check("extract_phone: с дефисами и скобками", poller.extract_phone("8(912)345-67-89") == "79123456789")
 check("extract_phone: без номера в тексте", poller.extract_phone("сколько стоит линия раздачи?") is None)
 
 # ---------------------------------------------------------------------
@@ -148,7 +148,7 @@ with patch("carrotquest_client.requests.get", side_effect=mock_cq_get(conversati
         sent_json = props_calls[0].kwargs["json"]
         check(
             "poller: телефон нормализован в операции обновления свойства",
-            sent_json["operations"][0]["value"] == "+79123456789",
+            sent_json["operations"][0]["value"] == "79123456789",
             str(sent_json),
         )
 

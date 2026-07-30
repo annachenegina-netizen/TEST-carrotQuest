@@ -17,15 +17,20 @@ _PHONE_RE = re.compile(r"(?:\+7|8|7)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\
 
 
 def extract_phone(text: str) -> str | None:
-    """Достаёт из текста сообщения российский номер телефона, если он там есть."""
+    """Достаёт из текста сообщения российский номер телефона, если он там есть.
+
+    Без "+" — проверено вживую 2026-07-30: Carrot Quest молча отклоняет
+    значение свойства $phone с ведущим "+" (API отвечает 200, но кладёт
+    ключ в "not_changed_props"), а чистые цифры принимает нормально.
+    """
     match = _PHONE_RE.search(text)
     if not match:
         return None
     digits = re.sub(r"\D", "", match.group())
     if len(digits) == 11 and digits[0] in "78":
-        return "+7" + digits[1:]
+        return "7" + digits[1:]
     if len(digits) == 10:
-        return "+7" + digits
+        return "7" + digits
     return None
 
 
